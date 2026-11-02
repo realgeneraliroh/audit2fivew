@@ -1,0 +1,42 @@
+# Copyright (c) 2026 J
+# All rights reserved.
+# Released under the GNU Affero General Public License v3.0.
+
+name: "audit2fivew"
+arch: "${ARCH}"
+platform: "linux"
+version: "${VERSION}"
+release: "1"
+section: "admin"
+priority: "optional"
+maintainer: "audit2fivew maintainers <maintainers@audit2fivew.org>"
+description: |
+  A non-destructive Terminal UI (TUI) for SELinux AVC denial troubleshooting,
+  built with Go and Bubble Tea.
+homepage: "https://github.com/realgeneraliroh/audit2fivew"
+license: "AGPL-3.0-or-later AND MIT AND BSD-3-Clause AND blessing"
+
+depends:
+  - "audit"
+
+contents:
+  - src: "dist/audit2fivew-linux-${ARCH}"
+    dst: "/usr/bin/audit2fivew"
+    file_info:
+      mode: 0755
+
+  - src: "README.md"
+    dst: "/usr/share/doc/audit2fivew/README.md"
+    file_info:
+      mode: 0644
+
+  - src: "LICENSE"
+    dst: "/usr/share/licenses/audit2fivew/LICENSE"
+    file_info:
+      mode: 0644
+
+  - src: "audit2fivew.1"
+    dst: "/usr/share/man/man1/audit2fivew.1"
+    file_info:
+      mode: 0644
+

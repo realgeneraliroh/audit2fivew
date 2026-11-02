@@ -1,0 +1,276 @@
+# Copyright (c) 2026 J
+# All rights reserved.
+# Released under the GNU Affero General Public License v3.0.
+
+name: Test, Build, and Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+enable-openid-connect: true
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Run unit tests
+        run: |
+          go test -v ./...
+
+  build:
+    name: Build Linux Binaries (x86 & ARM)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Compile and package Linux binaries
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -E '^Version:' audit2fivew.spec | awk '{print $2}')"
+          fi
+          LDFLAGS="-s -w -X main.Version=${VERSION}"
+
+          mkdir -p dist
+
+          # Target platforms: Linux x86 (amd64) and ARM (arm64)
+          PLATFORMS=(
+            "linux/amd64"
+            "linux/arm64"
+          )
+
+          for platform in "${PLATFORMS[@]}"; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+            TARGET="audit2fivew-${VERSION}-${GOOS}-${GOARCH}"
+
+            echo "==> Building ${TARGET}..."
+            STAGE_DIR="/tmp/stage-${TARGET}"
+            rm -rf "${STAGE_DIR}"
+            mkdir -p "${STAGE_DIR}"
+
+            CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" \
+              go build -trimpath -ldflags "${LDFLAGS}" \
+              -o "${STAGE_DIR}/audit2fivew" .
+
+            # Standalone binary
+            cp "${STAGE_DIR}/audit2fivew" "dist/audit2fivew-${GOOS}-${GOARCH}"
+
+            # Tarball bundle with docs, license, and man page
+            cp README.md LICENSE audit2fivew.1 "${STAGE_DIR}/"
+            tar -czf "dist/${TARGET}.tar.gz" -C "${STAGE_DIR}" audit2fivew README.md LICENSE audit2fivew.1
+            rm -rf "${STAGE_DIR}"
+          done
+
+      - name: Build RPM packages using nfpm
+        run: |
+          set -euo pipefail
+          export PATH="$(go env GOPATH)/bin:$PATH"
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            RPM_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            RPM_VERSION="$(grep -E '^Version:' audit2fivew.spec | awk '{print $2}')"
+          fi
+
+          echo "Installing nfpm packager..."
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+          for arch in amd64 arm64; do
+            echo "==> Building RPM for ${arch}..."
+            sed -e "s/\${ARCH}/${arch}/g" -e "s/\${VERSION}/${RPM_VERSION}/g" nfpm.yaml > "/tmp/nfpm-${arch}.yaml"
+            nfpm pkg --config "/tmp/nfpm-${arch}.yaml" --packager rpm --target dist/
+            rm -f "/tmp/nfpm-${arch}.yaml"
+          done
+
+          echo "RPM packages built in dist/:"
+          ls -lh dist/*.rpm
+
+      - name: Package vendor archive for offline builds
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -E '^Version:' audit2fivew.spec | awk '{print $2}')"
+          fi
+
+          echo "Packaging offline vendor archive..."
+          go mod vendor
+          tar -czf "dist/audit2fivew-${VERSION}-vendor.tar.gz" vendor/
+          rm -rf vendor
+
+      - name: Generate checksums
+        run: |
+          (cd dist && sha256sum * > sha256sums.txt)
+          echo "Build complete. Artifacts in dist/:"
+          ls -lh dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: audit2fivew-packages
+          path: dist/
+
+  publish:
+    name: Publish Packages
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Fetch Authorized Integration JWT
+        id: jwt
+        env:
+          AUD: u:1:642f7121-5b82-4571-9bf6-0987616e0315
+        run: |
+          set -euo pipefail
+          OUTPUT_FILE="${GITHUB_OUTPUT:-${FORGEJO_OUTPUT:-/tmp/actions_output}}"
+
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${AUD:-}" ]; then
+            echo "Requesting Authorized Integration JWT for audience '${AUD}'..."
+            jwt=$(curl --fail -sS \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUD}" | jq -r ".value")
+            echo "::add-mask::${jwt}"
+            echo "token=${jwt}" >> "${OUTPUT_FILE}"
+            echo "Successfully retrieved Authorized Integration token."
+          else
+            echo "Using default runner token..."
+            echo "token=${{ secrets.GITHUB_TOKEN }}" >> "${OUTPUT_FILE}"
+          fi
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: audit2fivew-packages
+          path: dist/
+
+      - name: Publish to Forgejo Package Registry
+        env:
+          TOKEN: ${{ steps.jwt.outputs.token }}
+          SERVER_URL: ${{ github.server_url }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          echo "Publishing packages to ${SERVER_URL}/api/packages/${OWNER}/generic/audit2fivew/${VERSION}/"
+
+          for file in dist/*; do
+            filename=$(basename "$file")
+            target_url="${SERVER_URL}/api/packages/${OWNER}/generic/audit2fivew/${VERSION}/${filename}"
+
+            echo -n "--> Uploading ${filename}... "
+            # Delete prior upload if it exists to prevent 409 Conflict on overwrite (silence 404 response body)
+            curl -sS -o /dev/null -X DELETE \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "${target_url}" || true
+
+            # Upload the package file
+            curl -sS -fail -o /dev/null -w "HTTP %{http_code}\n" -X PUT \
+              -H "Authorization: Bearer ${TOKEN}" \
+              --upload-file "$file" \
+              "${target_url}"
+          done
+
+          echo "All packages successfully published to Forgejo Package Registry!"
+
+      - name: Publish to Forgejo Releases
+        env:
+          TOKEN: ${{ steps.jwt.outputs.token }}
+          SERVER_URL: ${{ github.server_url }}
+          FULL_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${FULL_REPO%/*}"
+          REPO="${FULL_REPO#*/}"
+
+          TAG_NAME="${GITHUB_REF_NAME}"
+          REL_TITLE="Release ${GITHUB_REF_NAME}"
+
+          echo "Ensuring Forgejo release for tag '${TAG_NAME}' in ${OWNER}/${REPO}..."
+
+          REL_INFO=$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
+            "${SERVER_URL}/api/v1/repos/${OWNER}/${REPO}/releases/tags/${TAG_NAME}" || true)
+          REL_ID=$(echo "${REL_INFO}" | jq -r '.id // empty' 2>/dev/null || true)
+
+          if [ -z "${REL_ID}" ] || [ "${REL_ID}" = "null" ]; then
+            echo "Creating new release for ${TAG_NAME}..."
+            CREATE_PAYLOAD=$(jq -n \
+              --arg tag "$TAG_NAME" \
+              --arg title "$REL_TITLE" \
+              --arg commit "$COMMIT_SHA" \
+              --arg body "Automated build with multi-platform binaries, archives, and RPMs." \
+              '{tag_name: $tag, target_commitish: $commit, name: $title, body: $body, draft: false, prerelease: false}')
+
+            CREATE_RESP=$(curl -sS -X POST \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${CREATE_PAYLOAD}" \
+              "${SERVER_URL}/api/v1/repos/${OWNER}/${REPO}/releases")
+
+            if ! echo "${CREATE_RESP}" | jq -e .id >/dev/null 2>&1; then
+              echo "::error::Failed to create Forgejo release. Response: ${CREATE_RESP}"
+              exit 1
+            fi
+            REL_ID=$(echo "${CREATE_RESP}" | jq -r '.id')
+          fi
+
+          echo "Release ID is ${REL_ID}. Uploading release assets..."
+
+          EXISTING_ASSETS=$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
+            "${SERVER_URL}/api/v1/repos/${OWNER}/${REPO}/releases/${REL_ID}/assets" || echo "[]")
+
+          for file in dist/*; do
+            filename=$(basename "$file")
+
+            # Delete existing asset if already uploaded
+            ASSET_ID=$(echo "${EXISTING_ASSETS}" | jq -r --arg n "$filename" '.[] | select(.name == $n) | .id' 2>/dev/null || true)
+            if [ -n "${ASSET_ID}" ] && [ "${ASSET_ID}" != "null" ]; then
+              echo -n "Deleting prior asset ${filename}... "
+              curl -sS -o /dev/null -X DELETE \
+                -H "Authorization: Bearer ${TOKEN}" \
+                "${SERVER_URL}/api/v1/repos/${OWNER}/${REPO}/releases/${REL_ID}/assets/${ASSET_ID}" || true
+              echo "done."
+            fi
+
+            echo -n "Uploading ${filename} to release... "
+            curl -sS -fail -o /dev/null -w "HTTP %{http_code}\n" -X POST \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "attachment=@${file}" \
+              "${SERVER_URL}/api/v1/repos/${OWNER}/${REPO}/releases/${REL_ID}/assets?name=${filename}"
+          done
+
+          echo "All release assets successfully attached to Forgejo Release!"

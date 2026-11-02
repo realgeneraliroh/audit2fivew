@@ -1,0 +1,132 @@
+.TH AUDIT2FIVEW 1 "2026-11-02" "audit2fivew 1.0.0" "User Commands"
+.SH NAME
+audit2fivew \- Terminal UI for SELinux AVC denial troubleshooting
+.SH SYNOPSIS
+.B audit2fivew
+[\fB\-log\fR \fIpath\fR]
+[\fB\-db\fR \fIpath\fR]
+[\fB\-version\fR]
+.SH DESCRIPTION
+\fBaudit2fivew\fR is a non-destructive, fully-offline Terminal User Interface
+(TUI) utility designed for inspecting, troubleshooting, and resolving SELinux
+Access Vector Cache (AVC) denials.
+.PP
+It ingests denial events from the Linux audit daemon log
+(\fI/var/log/audit/audit.log\fR) and augments them via \fBausearch\fR(8).
+Denials are parsed, deduplicated, and persisted in a local SQLite database
+for historical analysis across log rotations.
+.PP
+The interactive interface presents a split master-detail view organized around
+the \(lqFive Ws\(rq framework, explaining in plain terms:
+.TP
+\(bu
+\fBWhen\fR \(em The exact timestamp of the denial.
+.TP
+\(bu
+\fBWho\fR \(em Source SELinux security context, executable name (\fIcomm\fR),
+and Process ID (\fIPID\fR).
+.TP
+\(bu
+\fBWhere\fR \(em Target SELinux security context and path or device name.
+.TP
+\(bu
+\fBWhat\fR \(em Target security class (e.g. \fIfile\fR, \fIsocket\fR) and
+denied permissions.
+.TP
+\(bu
+\fBWay to Fix\fR \(em Synthesized Type Enforcement (\fI.te\fR) policy rules
+and the exact commands required to build and load a custom policy module
+using \fBcheckmodule\fR(8) and \fBsemodule\fR(8).
+.SH OPTIONS
+.TP
+.BI \-log \ path
+Path to the SELinux audit log file.
+Default: \fI/var/log/audit/audit.log\fR
+.TP
+.BI \-db \ path
+Path to the SQLite database used for persisting and tracking denial history.
+Default: \fI~/.local/share/audit2fivew/denials.db\fR
+.TP
+.B \-version
+Display version information and exit.
+.SH INTERACTIVE CONTROLS
+While in the interactive TUI, the following keybindings are available:
+.SS Global
+.TP
+.B q\fR, \fBCtrl+c
+Quit \fBaudit2fivew\fR.
+.TP
+.B Tab
+Switch focus between the denial list pane and the detail inspection pane.
+.TP
+.B /
+Enter filter mode. Begin typing to filter the denial list by source type,
+target type, or permission.
+.TP
+.B Esc
+Exit filter mode, or clear the active filter string if not typing.
+.TP
+.B r
+Trigger an immediate refresh to re-read new denials from the audit log
+and \fBausearch\fR(8).
+.SS List Pane (Left)
+.TP
+.B Up\fR, \fBk
+Move the selection cursor up.
+.TP
+.B Down\fR, \fBj
+Move the selection cursor down.
+.SS Detail Pane (Right)
+.TP
+.B Up\fR, \fBk
+Scroll the detail viewport up.
+.TP
+.B Down\fR, \fBj
+Scroll the detail viewport down.
+.TP
+.B g
+Scroll to the top of the detail viewport.
+.TP
+.B G
+Scroll to the bottom of the detail viewport.
+.TP
+.B Mouse Wheel
+Scroll the detail pane content.
+.SH FILES
+.TP
+.I /var/log/audit/audit.log
+Default system audit log containing raw SELinux AVC messages. Reading this
+file typically requires superuser (\fBroot\fR) privileges or membership in
+the \fIaudit\fR group.
+.TP
+.I ~/.local/share/audit2fivew/denials.db
+SQLite database storing deduplicated historical denials and metadata.
+.SH EXIT STATUS
+.TP
+.B 0
+Successful completion.
+.TP
+.B 1
+Initialization failure (e.g., unable to open or create SQLite database
+directory, or terminal UI runtime error).
+.SH NOTES
+\fBaudit2fivew\fR is strictly non-destructive. It reads audit logs and writes
+only to its local user database. It never modifies active SELinux policy
+or system audit configuration. To apply generated remediation rules, review
+the suggested commands in the \(lqWay to Fix\(rq section and execute them
+manually with administrative privileges.
+.SH SEE ALSO
+.BR audit2allow (1),
+.BR ausearch (8),
+.BR semodule (8),
+.BR checkmodule (8),
+.BR semanage (8),
+.BR auditd (8),
+.BR audit.log (5)
+.SH AUTHORS
+Written and maintained by J <\fImaintainers@audit2fivew.org\fR>.
+.SH COPYRIGHT
+Copyright \(co 2026 J.
+.br
+Released under the GNU Affero General Public License version 3.0 or later
+(AGPL-3.0-or-later).

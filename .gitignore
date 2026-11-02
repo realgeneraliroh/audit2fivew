@@ -1,0 +1,7 @@
+audit2fivew
+audit2fivew-*
+rpmbuild/
+vendor/
+public/
+*.db
+

@@ -1,0 +1,41 @@
+# Copyright (c) 2026 J
+# All rights reserved.
+# Released under the GNU Affero General Public License v3.0.
+
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Install doc2go
+        run: |
+          go install go.abhg.dev/doc2go@latest
+
+      - name: Generate static documentation
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          mkdir -p public
+          doc2go -out public ./...
+
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: docs
+          path: public/
